@@ -18,7 +18,7 @@ replication of the Anthropic paper. See [Limitations](#limitations) below.
 ```bash
 uv sync
 # Agree to the PLaMo Community License on Hugging Face first, then:
-uv run huggingface-cli login
+uv run hf auth login
 
 # Phase 2 — build the fitting corpus
 uv run python data/corpus/build_corpus.py --config data/corpus/config.yaml
@@ -27,6 +27,12 @@ uv run python data/corpus/build_corpus.py --config data/corpus/config.yaml
 # Phase 4 — apply the lens
 # Phase 5 — haiku probing + UI
 ```
+
+`uv sync` pulls a CUDA-12.9-linked (`cu129`) torch build (see
+[Environment notes](#environment-notes--known-compatibility-issues) below) — if your GPU driver
+supports a different CUDA version, adjust the `[[tool.uv.index]]` entry in `pyproject.toml`
+accordingly. Always load the model via `jlens_plamo.model_loading.load_plamo()`, not
+`AutoModelForCausalLM.from_pretrained()` directly — see the same section for why.
 
 ## How it works
 
@@ -54,6 +60,41 @@ scripts/        run_fit.py and other one-off scripts
 web/            FastAPI backend + self-contained HTML slice-grid viewer
 ```
 
+## Environment notes / known compatibility issues
+
+Phase 3a's smoke test (`scripts/smoke_test.py`) surfaced three real incompatibilities between
+`pfnet/plamo-3-nict-8b-base`'s `trust_remote_code` model and the rest of this stack — none of
+them the SWA/GDN autograd concern originally anticipated. All three are worked around in
+`jlens_plamo/model_loading.py` (`load_plamo()`); use that instead of calling
+`AutoModelForCausalLM.from_pretrained()` directly, or you'll hit them yourself.
+
+1. **`jlens.from_hf()`'s layout auto-detection doesn't work on PLaMo-3.** Its decoder wraps the
+   block list in an extra `Plamo3Decoder` module — `model.model.layers` is that wrapper, not the
+   `nn.ModuleList` of blocks (`model.model.layers.layers` is). `jlens_plamo/plamo_adapter.py`
+   implements `jlens.protocol.LensModel` directly instead, which is jlens's own documented
+   extension point for exactly this case. `jlens`'s fitting/application math is untouched.
+2. **`transformers` version mismatch on tied weights.** `transformers>=5.5` (required by `jlens`)
+   expects `_tied_weights_keys: dict[str, str]`; PLaMo's modeling file still sets the pre-5.5 list
+   form and crashes in `get_expanded_tied_weights_keys()`. Patched to the dict form at import time.
+3. **RoPE cache corruption on load (the one to actually watch out for).** Each layer's
+   `RotaryEmbedding` holds `inv_freq`/`cos_cached`/`sin_cached` as `persistent=False` buffers —
+   pure functions of static config, no learned data. On every load we tried, a random subset of
+   the 32 layers' worth of these buffers (varies per run, sometimes zero, sometimes over a third
+   of the model) come out as uninitialized garbage instead of the values `__init__` computed,
+   producing NaNs partway through the forward pass. Reproduced on CPU and CUDA, with and without
+   `low_cpu_mem_usage`. This looks like an upstream `transformers`/`accelerate` bug with
+   non-persistent computed buffers surviving the meta-device-skeleton + checkpoint-dispatch
+   loading path, not something specific to PLaMo or jlens. `load_plamo()` unconditionally rebuilds
+   these buffers after loading (cheap, deterministic, safe regardless of root cause). If you ever
+   load this model without going through `load_plamo()`, sanity-check
+   `torch.isnan(model.model.layers.layers[i].mixer.rotary_emb.inv_freq).any()` before trusting any
+   output.
+
+Separately, `uv sync` pins `torch` to the `cu129` wheel index (see `pyproject.toml`): the default
+PyPI torch build at the time of writing links against CUDA 13, newer than what this project's dev
+GPU (RTX 5090, driver 576.88, CUDA 12.9) supports. If you're on different hardware/drivers, adjust
+or remove that pin.
+
 ## Limitations
 
 - Initial fitting corpus is n=100 prompts — small relative to the paper's n=1000; readouts may
@@ -64,9 +105,10 @@ web/            FastAPI backend + self-contained HTML slice-grid viewer
   samples at each generation caught and removed adult-content and product-listing-dump documents
   across two filter iterations; one residual machine-translation-flavored ad-copy document was
   knowingly left in the accepted n=100 as a known, tolerated source of noise at this corpus size.
-- PLaMo-3's `trust_remote_code` attention implementation (SWA/full hybrid) has not been
-  independently verified upstream for autograd/VJP compatibility with `jacobian-lens`; this is
-  checked with a smoke test before any production fit (see Phase 3a in `CLAUDE.md`).
+- PLaMo-3's `trust_remote_code` attention implementation (SWA/full hybrid) autograd/VJP behavior
+  was checked in the Phase 3a smoke test and gradients flow correctly at both an SWA and a
+  full-attention layer — see [Environment notes](#environment-notes--known-compatibility-issues)
+  above for the (different) issues that smoke test actually caught.
 - The haiku lookahead probing (Phase 5) is an original extension, not part of the Anthropic
   paper. Findings are reported as "interpretable but noisy" vs. "clear lookahead pattern"
   without exaggeration, in the spirit of `jlens-qwen36`'s "hypothesis-generating rather than a
