@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 dependencies = [
     "torch>=2.4",
-    "transformers>=4.44",
+    "transformers>=5.5",
     "datasets>=2.20",
     "huggingface-hub>=0.24",
     "accelerate>=0.33",
@@ -36,3 +36,14 @@ packages = ["jlens_plamo"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+# The default PyPI torch wheel is built against CUDA 13, which is newer than
+# this machine's NVIDIA driver (576.88, CUDA 12.9) supports. Pin to the
+# matching cu129 build instead of requiring a driver upgrade.
+torch = { index = "pytorch-cu129" }
