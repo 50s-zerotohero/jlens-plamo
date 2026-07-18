@@ -1,0 +1,2 @@
+{"id": "example-001", "text": "これは\nプレースホルダー\nですよ", "kigo": null, "kigo_season": null, "kireji": null, "mora_breakdown": [5, 7, 5], "notes": "PLACEHOLDER — format demo only, not a real curated haiku. See data/probes/README.md."}
+{"id": "example-002", "text": "季語入り\n切れ字も入れて\nかな", "kigo": "季語(仮)", "kigo_season": "spring", "kireji": "かな", "mora_breakdown": [5, 7, 3], "notes": "PLACEHOLDER — format demo only, not a real curated haiku."}

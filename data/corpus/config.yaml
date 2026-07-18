@@ -1,0 +1,53 @@
+# jlens-plamo — fitting corpus recipe
+#
+# Neuronpedia-style config: this file plus build_corpus.py fully determine
+# prompts.jsonl. Raw text is never committed; regenerate with:
+#
+#   uv run python data/corpus/build_corpus.py --config data/corpus/config.yaml
+#
+# Given the same seed and the same upstream dataset snapshots, this produces
+# an equivalent 100-document corpus. (Streaming HF datasets are not perfectly
+# pinned to a content hash across time — if upstream data changes, results
+# may drift slightly; this is a known limitation, not a bug in the recipe.)
+
+seed: 42
+
+tokenizer:
+  model_id: pfnet/plamo-3-nict-8b-base
+  trust_remote_code: true
+
+sources:
+  - name: fineweb-2
+    dataset: HuggingFaceFW/fineweb-2
+    config: jpn_Jpan
+    split: train
+    streaming: true
+    shuffle_buffer_size: 10000
+    target_count: 83     # within the decided 80-85 range
+    max_candidates_scanned: 20000
+
+  - name: wikipedia
+    dataset: wikimedia/wikipedia
+    config: 20231101.ja
+    split: train
+    streaming: true
+    shuffle_buffer_size: 10000
+    target_count: 17     # within the decided 15-20 range
+    max_candidates_scanned: 20000
+
+total_target_count: 100
+
+filters:
+  min_tokens: 128          # documents must naturally reach >=128 tokens; never truncate-and-pad
+  min_japanese_char_ratio: 0.3   # fraction of hiragana/katakana/kanji among non-whitespace chars
+  max_boilerplate_keyword_hits: 2
+  max_pipe_char_count: 8         # leftover table/nav markup signal
+  min_median_line_length: 15     # short median line length + many lines ~= nav menu dump
+  min_line_count_for_nav_check: 10
+  near_dup_shingle_size: 5       # character n-gram size for near-dup detection
+  near_dup_jaccard_threshold: 0.8
+  max_stored_chars: 4000         # cap stored text length; downstream fitting takes first 128 tokens
+
+output:
+  prompts_path: data/corpus/prompts.jsonl
+  sample_preview_count: 5   # docs shown to the human for the Phase 2 checkpoint review
