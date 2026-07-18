@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Data (raw scraped corpora / large artifacts are never committed — see data/*/README.md).
+# data/probes/*.jsonl IS committed: it's a small, hand-curated probe set, not raw corpus text.
+data/corpus/prompts.jsonl
+data/lens/*.npz
+data/lens/*.pt
+data/lens/checkpoints/
+
+# Model / cache
+.cache/
+*.log
+
+# OS
+.DS_Store
