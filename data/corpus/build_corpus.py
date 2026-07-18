@@ -31,9 +31,33 @@ BOILERPLATE_KEYWORDS = [
     "ログイン", "会員登録", "カートに入れる", "お問い合わせ", "cookie",
 ]
 
+# Hard reject, unlike BOILERPLATE_KEYWORDS: any single hit disqualifies the
+# document rather than counting toward a threshold. Deliberately targets
+# explicit-content web-scrape artifacts, not general adult-themed topics.
+NSFW_KEYWORDS = [
+    "アダルト動画", "エロ動画", "エロ画像", "無修正", "潮吹き", "緊縛",
+    "AV女優", "風俗", "出会い系", "ヌード写真", "セックス", "アダルトビデオ",
+    "素人撮影", "人妻", "熟女", "巨乳美女",
+]
+
+# EC / product-listing dumps read as concatenated noun phrases (item names,
+# brand tags, prices, sizes) rather than sentences, so they carry almost no
+# sentence-ending punctuation relative to their length.
+SENTENCE_END_RE = re.compile(r"[。！？]")
+
 JAPANESE_CHAR_RE = re.compile(
     r"[぀-ゟ゠-ヿ一-鿿]"
 )
+
+
+def contains_nsfw(text: str) -> bool:
+    return any(kw in text for kw in NSFW_KEYWORDS)
+
+
+def sentence_end_density(text: str) -> float:
+    if not text:
+        return 0.0
+    return len(SENTENCE_END_RE.findall(text)) / len(text)
 
 
 def japanese_char_ratio(text: str) -> float:
@@ -45,6 +69,9 @@ def japanese_char_ratio(text: str) -> float:
 
 
 def looks_like_boilerplate(text: str, cfg: dict) -> bool:
+    if contains_nsfw(text):
+        return True
+
     hits = sum(1 for kw in BOILERPLATE_KEYWORDS if kw in text)
     if hits > cfg["max_boilerplate_keyword_hits"]:
         return True
@@ -58,6 +85,14 @@ def looks_like_boilerplate(text: str, cfg: dict) -> bool:
         median_len = lengths[len(lengths) // 2]
         if median_len < cfg["min_median_line_length"]:
             return True
+
+    if (
+        len(text) >= cfg["min_length_for_density_check"]
+        and sentence_end_density(text) < cfg["min_sentence_end_density"]
+    ):
+        # Listing dumps (product names / brand tags / prices strung together)
+        # carry almost no 。！？ relative to length, unlike real prose.
+        return True
 
     if japanese_char_ratio(text) < cfg["min_japanese_char_ratio"]:
         return True

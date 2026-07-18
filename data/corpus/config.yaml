@@ -44,6 +44,10 @@ filters:
   max_pipe_char_count: 8         # leftover table/nav markup signal
   min_median_line_length: 15     # short median line length + many lines ~= nav menu dump
   min_line_count_for_nav_check: 10
+  min_sentence_end_density: 0.004  # 。！？ per char; below this ~= EC/listing dump, not prose
+  min_length_for_density_check: 300  # only apply the density check to docs long enough to judge
+  # NSFW keyword list (hard reject, not threshold-counted) lives in build_corpus.py
+  # as NSFW_KEYWORDS, not here, since it's a fixed denylist rather than a tunable.
   near_dup_shingle_size: 5       # character n-gram size for near-dup detection
   near_dup_jaccard_threshold: 0.8
   max_stored_chars: 4000         # cap stored text length; downstream fitting takes first 128 tokens

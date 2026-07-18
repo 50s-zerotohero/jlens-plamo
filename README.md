@@ -58,6 +58,12 @@ web/            FastAPI backend + self-contained HTML slice-grid viewer
 
 - Initial fitting corpus is n=100 prompts — small relative to the paper's n=1000; readouts may
   be noisy. See `data/lens/README.md` for the actual corpus size used for the fitted lens.
+- The fineweb-2 portion of the corpus is filtered with simple heuristics (NSFW keyword denylist,
+  boilerplate keywords, nav-menu line-shape detection, sentence-ending-punctuation density to
+  catch EC/listing dumps) rather than a learned quality classifier. A human review of 5 random
+  samples at each generation caught and removed adult-content and product-listing-dump documents
+  across two filter iterations; one residual machine-translation-flavored ad-copy document was
+  knowingly left in the accepted n=100 as a known, tolerated source of noise at this corpus size.
 - PLaMo-3's `trust_remote_code` attention implementation (SWA/full hybrid) has not been
   independently verified upstream for autograd/VJP compatibility with `jacobian-lens`; this is
   checked with a smoke test before any production fit (see Phase 3a in `CLAUDE.md`).
