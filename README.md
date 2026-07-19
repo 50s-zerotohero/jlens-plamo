@@ -114,26 +114,16 @@ hardware/drivers.
 
 ## Limitations
 
-- Initial fitting corpus is n=100 prompts — small relative to the paper's n=1000; readouts may
-  be noisy. See `data/lens/README.md` for the actual corpus size used for the fitted lens.
-- The fineweb-2 portion of the corpus is filtered with simple heuristics (NSFW keyword denylist,
-  boilerplate keywords, nav-menu line-shape detection, sentence-ending-punctuation density to
-  catch EC/listing dumps) rather than a learned quality classifier. A human review of 5 random
-  samples at each generation caught and removed adult-content and product-listing-dump documents
-  across two filter iterations; one residual machine-translation-flavored ad-copy document was
-  knowingly left in the accepted n=100 as a known, tolerated source of noise at this corpus size.
-- PLaMo-3's `trust_remote_code` attention implementation (SWA/full hybrid) autograd/VJP behavior
-  was checked in the Phase 3a smoke test and gradients flow correctly at both an SWA and a
-  full-attention layer — see [Environment notes](#environment-notes--known-compatibility-issues)
-  above for the (different) issues that smoke test actually caught.
-- The haiku lookahead probing (Phase 5) is an original extension, not part of the Anthropic
-  paper. Findings are reported as "interpretable but noisy" vs. "clear lookahead pattern"
-  without exaggeration, in the spirit of `jlens-qwen36`'s "hypothesis-generating rather than a
-  robust reproduction" framing.
-- The [Demos](#demos) above are three hand-picked prompts run once each, not a systematic
-  evaluation — they show the lens *can* produce clean, meaningful readouts, not that it reliably
-  does so across arbitrary prompts. `data/lens/README.md`'s qualitative check includes a fourth,
-  noisier example (Japan's second-tallest mountain) deliberately kept in for balance.
+- Fitting corpus is n=100 prompts, vs. the paper's n=1000 — readouts may be noisy at this scale
+  (see `data/lens/README.md`).
+- Corpus filtering uses simple heuristics, not a learned classifier; a human review caught and
+  removed bad documents across two iterations, and one known-noisy document was knowingly kept.
+- PLaMo's SWA/full-attention autograd was verified correct (Phase 3a) — see
+  [Environment notes](#environment-notes--known-compatibility-issues) for what it did catch.
+- Haiku lookahead probing (Phase 5) is an original extension, not part of the Anthropic paper;
+  findings are reported honestly as noisy-but-interpretable, not a robust result.
+- The [Demos](#demos) are three hand-picked prompts, not a systematic evaluation —
+  `data/lens/README.md` keeps a fourth, noisier example for balance.
 
 ## Acknowledgements
 
