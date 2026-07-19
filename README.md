@@ -103,10 +103,22 @@ These are three prompts, not a systematic evaluation — see [Limitations](#limi
 ### Free-chat ("Ask") in the web UI
 
 `web/index.html`'s "Ask" button is real free-form chat, not a fixed set of presets: type any
-question, the model actually generates a real answer (`model.generate()`, greedy), and the lens
-grid is then computed over the *whole* question+answer exchange — so you can see what the model
-was "disposed to say" during its own generated continuation, not just during the prompt. Answer
+question, the model actually generates a real answer (`model.generate()`), and the lens grid is
+then computed over the *whole* question+answer exchange — so you can see what the model was
+"disposed to say" during its own generated continuation, not just during the prompt. Answer
 columns are visually marked in the grid.
+
+Both "Generate" and "Ask" support sampling (`temperature`, `top_p`, `seed`, `num_samples` in the
+UI), entirely via `model.generate(do_sample=True, temperature=..., top_p=...)` — no hand-rolled
+sampling code. `temperature=0` reproduces the original deterministic greedy behavior (same prompt
+→ same output, every time — this is what earlier looked like "caching" but was actually just
+determinism); `temperature > 0` with `num_samples > 1` draws several samples in one batched
+`generate()` call (`num_return_sequences`) and shows a frequency table of the distinct outputs,
+each annotated with its first generated token's logprob (`output_scores=True`) — a hook for later
+correlating sampling-time model confidence against the lens's own readout ranking at that
+position. With `num_samples > 1` in Ask, the grid is only computed for the first sample (running
+the full per-layer readout for every sample isn't worth the cost, and there's no single grid that
+could represent several different continuations at once).
 
 (Contrast with [`jlens.wezzard.com`](https://jlens.wezzard.com), a public demo of the
 `jlens-qwen36` reference project: its page ships `window.JLENS_MODE = "presentation"` and a list

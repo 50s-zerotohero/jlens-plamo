@@ -150,6 +150,22 @@
   }
   #detail h3, #generate-out h3 { margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--muted); font-weight: 500; }
   .rank { color: var(--muted); }
+
+  table.freq-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 0.5rem;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+  }
+  table.freq-table th, table.freq-table td {
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.freq-table th { background: var(--bg); color: var(--muted); font-weight: 500; }
+  table.freq-table td.count { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -165,7 +181,13 @@
       <label>layers <input type="text" id="layers" placeholder="空欄=全fit層 (例: 0,4,8,...)" /></label>
       <label><input type="checkbox" id="use-jacobian" checked /> J_l transport (外すと素のlogit lens)</label>
       <button id="run-btn">Run</button>
+    </div>
+    <div class="row">
       <label>max_new_tokens <input type="number" id="max-new-tokens" value="30" min="1" max="200" /></label>
+      <label>temperature <input type="number" id="temperature" value="0.7" min="0" max="2" step="0.1" /></label>
+      <label>top_p <input type="number" id="top-p" value="0.9" min="0" max="1" step="0.05" /></label>
+      <label>seed <input type="number" id="seed" placeholder="空欄=ランダム" /></label>
+      <label>num_samples <input type="number" id="num-samples" value="1" min="1" max="20" /></label>
       <button id="generate-btn" class="secondary">Generate (レンズなし)</button>
       <button id="ask-btn">Ask (質問→実回答→グリッド)</button>
     </div>
@@ -329,6 +351,52 @@ async function runSlice() {
   }
 }
 
+function escapeHtml(s) { return (s ?? "").replace(/</g, "&lt;"); }
+
+function samplingParams() {
+  const seedRaw = $("seed").value.trim();
+  return {
+    temperature: parseFloat($("temperature").value),
+    top_p: parseFloat($("top-p").value),
+    seed: seedRaw === "" ? null : parseInt(seedRaw, 10),
+    num_samples: parseInt($("num-samples").value, 10) || 1,
+  };
+}
+
+// Renders either a single continuation (num_samples == 1) or a frequency
+// table grouping identical continuations, each with its count and its
+// first-generated-token logprob (for later correlation against the lens's
+// own readout ranking at that position).
+function renderSamples(data, title) {
+  const samples = data.samples;
+  let html = `<h3>${title}</h3>`;
+  if (samples.length === 1) {
+    const s = samples[0];
+    html += escapeHtml(s.continuation) +
+      `<div class="rank">first token: ${JSON.stringify(s.first_token)} ` +
+      `(logprob ${s.first_token_logprob.toFixed(3)})</div>`;
+    return html;
+  }
+  const groups = new Map();
+  samples.forEach((s) => {
+    if (!groups.has(s.continuation)) groups.set(s.continuation, []);
+    groups.get(s.continuation).push(s);
+  });
+  const rows = Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length);
+  html += `<table class="freq-table"><thead><tr><th>出力</th><th>頻度</th><th>初回トークン</th><th>平均logprob</th></tr></thead><tbody>`;
+  rows.forEach(([text, group]) => {
+    const avgLogprob = group.reduce((sum, s) => sum + s.first_token_logprob, 0) / group.length;
+    const firstTokens = new Set(group.map((s) => s.first_token));
+    const firstTokenLabel = firstTokens.size === 1
+      ? JSON.stringify([...firstTokens][0])
+      : `(${firstTokens.size}種)`;
+    html += `<tr><td>${escapeHtml(text)}</td><td class="count">${group.length}/${samples.length}</td>` +
+      `<td>${firstTokenLabel}</td><td>${avgLogprob.toFixed(3)}</td></tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
 async function runGenerate() {
   const prompt = $("prompt").value;
   if (!prompt.trim()) { setStatus("プロンプトを入力してください", true); return; }
@@ -339,13 +407,17 @@ async function runGenerate() {
     const res = await fetch("/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, max_new_tokens: parseInt($("max-new-tokens").value, 10) || 30 }),
+      body: JSON.stringify({
+        prompt,
+        max_new_tokens: parseInt($("max-new-tokens").value, 10) || 30,
+        ...samplingParams(),
+      }),
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     out.style.display = "block";
-    out.innerHTML = "<h3>モデルの実際の生成結果(レンズ非使用)</h3>" + data.full_text.replace(/</g, "&lt;");
-    setStatus("生成完了");
+    out.innerHTML = renderSamples(data, "モデルの実際の生成結果(レンズ非使用)");
+    setStatus(data.do_sample ? `生成完了 (sampling, ${data.samples.length}件)` : "生成完了 (greedy)");
   } catch (e) {
     setStatus("エラー: " + e, true);
   } finally {
@@ -363,6 +435,7 @@ async function runAsk() {
     use_jacobian: $("use-jacobian").checked,
     layers: layersRaw ? layersRaw.split(",").map((s) => parseInt(s.trim(), 10)) : null,
     max_new_tokens: parseInt($("max-new-tokens").value, 10) || 30,
+    ...samplingParams(),
   };
   const out = $("generate-out");
   $("ask-btn").disabled = true;
@@ -375,15 +448,16 @@ async function runAsk() {
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    const answerText = data.tokens.slice(data.prompt_token_count).join("");
     out.style.display = "block";
-    out.innerHTML =
-      "<h3>モデルの実際の回答(この続きにもレンズを適用してグリッド化)</h3>" +
-      answerText.replace(/</g, "&lt;");
+    let title = "モデルの実際の回答(この続きにもレンズを適用してグリッド化)";
+    if (data.samples.length > 1) title += " — グリッドはサンプル1件目のみに対して計算";
+    out.innerHTML = renderSamples(data, title);
     renderGrid(data);
     setStatus(
       `完了: 質問${data.prompt_token_count}トークン + 回答${data.tokens.length - data.prompt_token_count}トークン ` +
-      `(色付き列 = モデル自身の回答)`
+      `(色付き列 = モデル自身の回答` +
+      (data.samples.length > 1 ? `, ${data.samples.length}件中1件目をグリッド化` : "") +
+      `)`
     );
   } catch (e) {
     setStatus("エラー: " + e, true);

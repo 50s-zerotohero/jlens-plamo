@@ -32,6 +32,7 @@ from typing import Any
 
 import jlens
 import torch
+import torch.nn.functional as F
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -115,16 +116,48 @@ def slice_(req: SliceRequest) -> dict:
     return _serialize_slice(result)
 
 
-def _run_generate(prompt: str, max_new_tokens: int) -> tuple[str, int]:
-    """Greedy-generate a continuation. Returns (full_text_no_special_tokens,
-    prompt_token_count) -- the token count uses the same encode() convention
-    (a single leading BOS) that read_layers()/JacobianLens.apply() use, so it
-    lines up with the position index in a later /api/slice-style call over
-    the full text."""
+def _run_generate_samples(
+    prompt: str,
+    max_new_tokens: int,
+    *,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    seed: int | None = None,
+    num_samples: int = 1,
+) -> dict:
+    """Generate one or more continuations via HF's own `model.generate()` --
+    no hand-rolled sampling. `temperature <= 0` forces greedy decoding
+    (`do_sample=False`, the tool's original deterministic behavior);
+    `num_samples` is forced to 1 in that case since repeated greedy calls are
+    always identical. `temperature > 0` samples `num_samples` sequences in a
+    single batched call via `num_return_sequences`, and (via
+    `output_scores=True`) records each sample's first generated token's
+    logprob -- for later correlation against the lens's own readout ranking
+    at that position.
+
+    Returns {"prompt_token_count": int, "do_sample": bool, "samples": [...]}
+    where each sample is {"full_text", "continuation", "first_token",
+    "first_token_logprob"}. `prompt_token_count` uses the same encode()
+    convention (a single leading BOS) that read_layers()/JacobianLens.apply()
+    use, so it lines up with the position index in a later /api/slice-style
+    call over a sample's full_text.
+    """
     state = _get_state()
     model, tokenizer = state["model"], state["tokenizer"]
     input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
-    with torch.no_grad():
+    prompt_len = input_ids.shape[1]
+
+    do_sample = temperature > 0
+    effective_num_samples = num_samples if do_sample else 1
+
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    gen_kwargs: dict[str, Any] = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=do_sample,
+        output_scores=True,
+        return_dict_in_generate=True,
         # use_cache=False: PLaMo's custom Plamo3Cache.finalize() does
         # `self[layer_idx]`, but transformers' generate() loop hands it a
         # plain Cache object that isn't subscriptable in this transformers
@@ -133,22 +166,55 @@ def _run_generate(prompt: str, max_new_tokens: int) -> tuple[str, int]:
         # "Environment notes". Disabling the KV cache sidesteps it at the
         # cost of recomputing attention over the whole prefix each step --
         # fine for this UI's short demo continuations.
-        output = model.generate(
-            input_ids, max_new_tokens=max_new_tokens, do_sample=False, use_cache=False
+        use_cache=False,
+    )
+    if do_sample:
+        gen_kwargs.update(
+            temperature=temperature, top_p=top_p, num_return_sequences=effective_num_samples
         )
-    full_text = tokenizer.decode(output[0], skip_special_tokens=True)
-    return full_text, input_ids.shape[1]
+
+    with torch.no_grad():
+        outputs = model.generate(input_ids, **gen_kwargs)
+
+    sequences = outputs.sequences  # [effective_num_samples, prompt_len + generated_len]
+    # outputs.scores[0]: logits for the first *generated* token, one row per
+    # sample -- exactly what output_scores=True is for; no custom sampling.
+    first_step_logprobs = F.log_softmax(outputs.scores[0].float(), dim=-1)
+
+    samples = []
+    for i in range(sequences.shape[0]):
+        first_token_id = sequences[i, prompt_len].item()
+        samples.append(
+            {
+                "full_text": tokenizer.decode(sequences[i], skip_special_tokens=True),
+                "continuation": tokenizer.decode(sequences[i, prompt_len:], skip_special_tokens=True),
+                "first_token": tokenizer.decode([first_token_id]),
+                "first_token_logprob": first_step_logprobs[i, first_token_id].item(),
+            }
+        )
+
+    return {"prompt_token_count": prompt_len, "do_sample": do_sample, "samples": samples}
 
 
 class GenerateRequest(BaseModel):
     prompt: str
     max_new_tokens: int = 30
+    temperature: float = 0.7
+    top_p: float = 0.9
+    seed: int | None = None
+    num_samples: int = 1
 
 
 @app.post("/generate")
 def generate(req: GenerateRequest) -> dict:
-    full_text, _ = _run_generate(req.prompt, req.max_new_tokens)
-    return {"full_text": full_text}
+    return _run_generate_samples(
+        req.prompt,
+        req.max_new_tokens,
+        temperature=req.temperature,
+        top_p=req.top_p,
+        seed=req.seed,
+        num_samples=req.num_samples,
+    )
 
 
 class AskRequest(BaseModel):
@@ -157,19 +223,36 @@ class AskRequest(BaseModel):
     top_k: int = 10
     layers: list[int] | None = None
     use_jacobian: bool = True
+    temperature: float = 0.7
+    top_p: float = 0.9
+    seed: int | None = None
+    num_samples: int = 1
 
 
 @app.post("/api/ask")
 def ask(req: AskRequest) -> dict:
     """Free-chat: generate the model's real answer, then run the slice grid
     over the whole question+answer exchange (re-tokenized from the decoded
-    text, since JacobianLens.apply() takes a prompt string, not raw ids)."""
+    text, since JacobianLens.apply() takes a prompt string, not raw ids).
+    When num_samples > 1, all samples are returned (for the frequency-table
+    view) but the grid is only computed for the first sample -- running the
+    full 31-layer readout per sample would be wasteful and there's no single
+    grid that could represent several different continuations at once."""
     state = _get_state()
-    full_text, prompt_token_count = _run_generate(req.prompt, req.max_new_tokens)
+    gen_result = _run_generate_samples(
+        req.prompt,
+        req.max_new_tokens,
+        temperature=req.temperature,
+        top_p=req.top_p,
+        seed=req.seed,
+        num_samples=req.num_samples,
+    )
+    primary = gen_result["samples"][0]
+    prompt_token_count = gen_result["prompt_token_count"]
     result = read_layers(
         state["lens"],
         state["lens_model"],
-        full_text,
+        primary["full_text"],
         layers=req.layers,
         top_k=req.top_k,
         max_seq_len=prompt_token_count + req.max_new_tokens + 8,
@@ -177,5 +260,7 @@ def ask(req: AskRequest) -> dict:
     )
     response = _serialize_slice(result)
     response["prompt_token_count"] = prompt_token_count
-    response["full_text"] = full_text
+    response["full_text"] = primary["full_text"]
+    response["samples"] = gen_result["samples"]
+    response["do_sample"] = gen_result["do_sample"]
     return response
