@@ -23,8 +23,12 @@ uv run hf auth login
 # Phase 2 — build the fitting corpus
 uv run python data/corpus/build_corpus.py --config data/corpus/config.yaml
 
-# Phase 3 — fit the lens (see data/lens/README.md once fitting has run)
-# Phase 4 — apply the lens
+# Phase 3 — fit the lens (multi-hour GPU job; see data/lens/README.md for the recipe used)
+uv run python scripts/run_fit.py
+
+# Phase 4 — apply the fitted lens: layer x position top-k readout
+uv run python -m jlens_plamo.apply "県庁所在地が松山である県は" --layers 16,20,24,28,30
+
 # Phase 5 — haiku probing + UI
 ```
 
@@ -48,6 +52,50 @@ The fitting corpus is mostly [`HuggingFaceFW/fineweb-2`](https://huggingface.co/
 (`jpn_Jpan` config) with a Japanese Wikipedia supplement for long-document coherence. Haiku data
 is kept out of the fitting corpus entirely and used only as a held-out probe set (see
 `data/probes/`).
+
+## Demos
+
+Run these yourself with `uv run python -m jlens_plamo.apply "<prompt>" --layers ...` (see
+`jlens_plamo/apply.py`). Output below is real, from the fitted `data/lens/lens.pt` described in
+`data/lens/README.md` — not fabricated or cherry-picked past what's shown.
+
+**Two-step factual reasoning** (Japanese "the prefecture whose capital is Matsuyama"):
+the correct answer surfaces from layer 20 onward, well before the final layer.
+
+```
+uv run python -m jlens_plamo.apply "県庁所在地が松山である県は" --layer 24 --position -1 --top-k 5
+  '愛媛県'(42.75)  '愛媛'(37.00)  '松山市'(36.25)  '高知県'(34.25)  '四国'(33.25)
+model (final layer, true): '愛媛県'(15.88)  '愛媛'(14.25)  '四国'(12.50)  '松山市'(12.25)  '松山'(11.81)
+```
+
+**"Spider → legs", Japanese analogue** of the Anthropic paper's headline example
+(`クモは節足動物で、脚の本数は` — "the spider is an arthropod, the number of legs is"): the count
+`8` is already the top readout by layer 28, two layers before the model's own final answer.
+
+```
+ layer | ...本数           | は
+    24 | 本数           | 蜘
+    28 | 数は           | 8
+    30 | 数は           | 8
+ model | 数            | 8
+```
+
+**Cross-lingual concept binding** (`パリはフランスの首都です。日本の首都は` — "Paris is the
+capital of France. Japan's capital is"): at layer 20, the readout at the *French* capital's own
+position briefly surfaces the English token `" Paris"` / `" in Paris"` even though the whole
+prompt is Japanese, and by the same layer `東京` (Tokyo) is already the top readout at the final
+position — the underlying concept looks language-agnostic before either surface-form token is
+chosen.
+
+```
+ layer | 首都(after フランス)   | ... | 首都(after 日本の)  | は
+    20 |  Paris          |     | 東京            |  Tokyo
+    24 | 首都             |     | 東京            |  Tokyo
+    30 | 首都             |     | は             | 東京
+ model | の              |     | 東京            | 東京
+```
+
+These are three prompts, not a systematic evaluation — see [Limitations](#limitations).
 
 ## Project layout
 
@@ -113,6 +161,10 @@ or remove that pin.
   paper. Findings are reported as "interpretable but noisy" vs. "clear lookahead pattern"
   without exaggeration, in the spirit of `jlens-qwen36`'s "hypothesis-generating rather than a
   robust reproduction" framing.
+- The [Demos](#demos) above are three hand-picked prompts run once each, not a systematic
+  evaluation — they show the lens *can* produce clean, meaningful readouts, not that it reliably
+  does so across arbitrary prompts. `data/lens/README.md`'s qualitative check includes a fourth,
+  noisier example (Japan's second-tallest mountain) deliberately kept in for balance.
 
 ## Acknowledgements
 
