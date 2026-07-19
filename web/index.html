@@ -130,6 +130,12 @@
   table.grid td.readout:hover { background: var(--cell-hover); }
   table.grid td.readout.selected { background: var(--cell-selected); color: var(--cell-selected-fg); }
   table.grid tr.model-row th, table.grid tr.model-row td { border-top: 2px solid var(--accent); font-weight: 600; }
+  /* Ask-mode only: marks columns that are the model's own generated answer,
+     not the user's question (higher-specificity hover/selected rules above
+     still win on interaction). */
+  table.grid th.answer-col, table.grid td.answer-col { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+  table.grid td.answer-col.readout:hover { background: var(--cell-hover); }
+  table.grid .answer-boundary { border-left: 2px solid var(--accent); }
 
   #detail, #generate-out {
     background: var(--panel-bg);
@@ -161,6 +167,7 @@
       <button id="run-btn">Run</button>
       <label>max_new_tokens <input type="number" id="max-new-tokens" value="30" min="1" max="200" /></label>
       <button id="generate-btn" class="secondary">Generate (レンズなし)</button>
+      <button id="ask-btn">Ask (質問→実回答→グリッド)</button>
     </div>
     <div id="status"></div>
   </div>
@@ -213,6 +220,11 @@ function renderDetail(layerLabel, position, token, readouts) {
 
 function renderGrid(data) {
   lastSlice = data;
+  // Ask-mode responses carry prompt_token_count: positions at/after it are
+  // the model's own generated answer, not the user's question.
+  const answerStart = data.prompt_token_count ?? null;
+  const isAnswerCol = (posIdx) => answerStart !== null && posIdx >= answerStart;
+
   const grid = $("grid");
   grid.innerHTML = "";
   const table = document.createElement("table");
@@ -224,7 +236,11 @@ function renderGrid(data) {
   data.tokens.forEach((tok, pos) => {
     const th = document.createElement("th");
     th.textContent = tok;
-    th.title = `position ${pos}`;
+    th.title = `position ${pos}` + (isAnswerCol(pos) ? " (model's answer)" : "");
+    if (isAnswerCol(pos)) {
+      th.classList.add("answer-col");
+      if (pos === answerStart) th.classList.add("answer-boundary");
+    }
     headRow.appendChild(th);
   });
   thead.appendChild(headRow);
@@ -240,6 +256,10 @@ function renderGrid(data) {
     rowData.forEach((readouts, posIdx) => {
       const td = document.createElement("td");
       td.className = "readout";
+      if (isAnswerCol(posIdx)) {
+        td.classList.add("answer-col");
+        if (posIdx === answerStart) td.classList.add("answer-boundary");
+      }
       td.textContent = readouts.length ? readouts[0].token : "";
       td.addEventListener("click", () => {
         if (selectedCell) selectedCell.classList.remove("selected");
@@ -261,6 +281,10 @@ function renderGrid(data) {
   data.model_readout.forEach((readouts, posIdx) => {
     const td = document.createElement("td");
     td.className = "readout";
+    if (isAnswerCol(posIdx)) {
+      td.classList.add("answer-col");
+      if (posIdx === answerStart) td.classList.add("answer-boundary");
+    }
     td.textContent = readouts.length ? readouts[0].token : "";
     td.addEventListener("click", () => {
       if (selectedCell) selectedCell.classList.remove("selected");
@@ -329,8 +353,48 @@ async function runGenerate() {
   }
 }
 
+async function runAsk() {
+  const prompt = $("prompt").value;
+  if (!prompt.trim()) { setStatus("プロンプトを入力してください", true); return; }
+  const layersRaw = $("layers").value.trim();
+  const body = {
+    prompt,
+    top_k: parseInt($("top-k").value, 10) || 10,
+    use_jacobian: $("use-jacobian").checked,
+    layers: layersRaw ? layersRaw.split(",").map((s) => parseInt(s.trim(), 10)) : null,
+    max_new_tokens: parseInt($("max-new-tokens").value, 10) || 30,
+  };
+  const out = $("generate-out");
+  $("ask-btn").disabled = true;
+  setStatus("生成中… → 生成結果にレンズを適用中… (初回はモデルロードで数十秒かかります)");
+  try {
+    const res = await fetch("/api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const answerText = data.tokens.slice(data.prompt_token_count).join("");
+    out.style.display = "block";
+    out.innerHTML =
+      "<h3>モデルの実際の回答(この続きにもレンズを適用してグリッド化)</h3>" +
+      answerText.replace(/</g, "&lt;");
+    renderGrid(data);
+    setStatus(
+      `完了: 質問${data.prompt_token_count}トークン + 回答${data.tokens.length - data.prompt_token_count}トークン ` +
+      `(色付き列 = モデル自身の回答)`
+    );
+  } catch (e) {
+    setStatus("エラー: " + e, true);
+  } finally {
+    $("ask-btn").disabled = false;
+  }
+}
+
 $("run-btn").addEventListener("click", runSlice);
 $("generate-btn").addEventListener("click", runGenerate);
+$("ask-btn").addEventListener("click", runAsk);
 loadLensInfo();
 </script>
 </body>

@@ -100,6 +100,21 @@ chosen.
 
 These are three prompts, not a systematic evaluation — see [Limitations](#limitations).
 
+### Free-chat ("Ask") in the web UI
+
+`web/index.html`'s "Ask" button is real free-form chat, not a fixed set of presets: type any
+question, the model actually generates a real answer (`model.generate()`, greedy), and the lens
+grid is then computed over the *whole* question+answer exchange — so you can see what the model
+was "disposed to say" during its own generated continuation, not just during the prompt. Answer
+columns are visually marked in the grid.
+
+(Contrast with [`jlens.wezzard.com`](https://jlens.wezzard.com), a public demo of the
+`jlens-qwen36` reference project: its page ships `window.JLENS_MODE = "presentation"` and a list
+of precomputed, gzipped example sessions — a deliberate read-only mode for public traffic, per
+that project's own README ("`active` is the full app; `presentation` is a strictly read-only
+viewer"). Nothing here needed that restriction: this UI only ever talks to one person's own local
+GPU, so `/api/ask` just runs generation live, every time.)
+
 ## Project layout
 
 ```

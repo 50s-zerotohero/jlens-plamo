@@ -4,11 +4,21 @@ web/index.html slice-grid viewer.
 Model + lens are loaded once, lazily, on first request (not at import time,
 so `uvicorn --reload` doesn't reload the model on every source change).
 
-Endpoints (per CLAUDE.md's Phase 5 spec):
+Endpoints (per CLAUDE.md's Phase 5 spec, plus /api/ask):
   GET  /             -- serves the self-contained HTML viewer
   GET  /api/lens      -- fitted-lens metadata
   POST /api/slice     -- layer x position top-k readout grid for one prompt
   POST /generate      -- plain model continuation (no lens), for comparison
+  POST /api/ask       -- free-chat: generate a real answer, then run the
+                         slice grid over the whole question+answer exchange
+
+/api/ask exists because a public J-lens demo (jlens.wezzard.com) turned out
+to serve precomputed example sessions rather than live chat -- reasonably,
+since live-inferencing a public site's traffic is a cost/abuse concern that
+doesn't apply to a single local GPU. There's nothing stopping live free-chat
+here: /api/ask just runs generate() then feeds the model's own real answer
+back through read_layers(), so the grid covers the model's actual output,
+not only the prompt.
 
 Run:
     uv run uvicorn web.app:app --port 8420
@@ -70,18 +80,7 @@ class SliceRequest(BaseModel):
     use_jacobian: bool = True
 
 
-@app.post("/api/slice")
-def slice_(req: SliceRequest) -> dict:
-    state = _get_state()
-    result = read_layers(
-        state["lens"],
-        state["lens_model"],
-        req.prompt,
-        layers=req.layers,
-        top_k=req.top_k,
-        max_seq_len=req.max_seq_len,
-        use_jacobian=req.use_jacobian,
-    )
+def _serialize_slice(result) -> dict:
     layers_sorted = sorted(result.by_layer)
     return {
         "tokens": result.tokens,
@@ -101,16 +100,30 @@ def slice_(req: SliceRequest) -> dict:
     }
 
 
-class GenerateRequest(BaseModel):
-    prompt: str
-    max_new_tokens: int = 30
+@app.post("/api/slice")
+def slice_(req: SliceRequest) -> dict:
+    state = _get_state()
+    result = read_layers(
+        state["lens"],
+        state["lens_model"],
+        req.prompt,
+        layers=req.layers,
+        top_k=req.top_k,
+        max_seq_len=req.max_seq_len,
+        use_jacobian=req.use_jacobian,
+    )
+    return _serialize_slice(result)
 
 
-@app.post("/generate")
-def generate(req: GenerateRequest) -> dict:
+def _run_generate(prompt: str, max_new_tokens: int) -> tuple[str, int]:
+    """Greedy-generate a continuation. Returns (full_text_no_special_tokens,
+    prompt_token_count) -- the token count uses the same encode() convention
+    (a single leading BOS) that read_layers()/JacobianLens.apply() use, so it
+    lines up with the position index in a later /api/slice-style call over
+    the full text."""
     state = _get_state()
     model, tokenizer = state["model"], state["tokenizer"]
-    input_ids = tokenizer(req.prompt, return_tensors="pt").input_ids.to(model.device)
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
     with torch.no_grad():
         # use_cache=False: PLaMo's custom Plamo3Cache.finalize() does
         # `self[layer_idx]`, but transformers' generate() loop hands it a
@@ -121,7 +134,48 @@ def generate(req: GenerateRequest) -> dict:
         # cost of recomputing attention over the whole prefix each step --
         # fine for this UI's short demo continuations.
         output = model.generate(
-            input_ids, max_new_tokens=req.max_new_tokens, do_sample=False, use_cache=False
+            input_ids, max_new_tokens=max_new_tokens, do_sample=False, use_cache=False
         )
     full_text = tokenizer.decode(output[0], skip_special_tokens=True)
+    return full_text, input_ids.shape[1]
+
+
+class GenerateRequest(BaseModel):
+    prompt: str
+    max_new_tokens: int = 30
+
+
+@app.post("/generate")
+def generate(req: GenerateRequest) -> dict:
+    full_text, _ = _run_generate(req.prompt, req.max_new_tokens)
     return {"full_text": full_text}
+
+
+class AskRequest(BaseModel):
+    prompt: str
+    max_new_tokens: int = 30
+    top_k: int = 10
+    layers: list[int] | None = None
+    use_jacobian: bool = True
+
+
+@app.post("/api/ask")
+def ask(req: AskRequest) -> dict:
+    """Free-chat: generate the model's real answer, then run the slice grid
+    over the whole question+answer exchange (re-tokenized from the decoded
+    text, since JacobianLens.apply() takes a prompt string, not raw ids)."""
+    state = _get_state()
+    full_text, prompt_token_count = _run_generate(req.prompt, req.max_new_tokens)
+    result = read_layers(
+        state["lens"],
+        state["lens_model"],
+        full_text,
+        layers=req.layers,
+        top_k=req.top_k,
+        max_seq_len=prompt_token_count + req.max_new_tokens + 8,
+        use_jacobian=req.use_jacobian,
+    )
+    response = _serialize_slice(result)
+    response["prompt_token_count"] = prompt_token_count
+    response["full_text"] = full_text
+    return response
