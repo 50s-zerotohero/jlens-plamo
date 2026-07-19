@@ -8,6 +8,8 @@ on [`pfnet/plamo-3-nict-8b-base`](https://huggingface.co/pfnet/plamo-3-nict-8b-b
 Gemma-style SWA/full-attention hybrid, no GDN), with an original extension: probing whether
 haiku lookahead planning (kigo / kireji / mora count) is visible through J-space.
 
+![Web UI showing the spider/legs lookahead example: the readout at each layer for "クモは節足動物で、脚の本数は" (the spider is an arthropod, the number of legs is), with "8" already the top answer several layers before the model's own final output.](assets/screenshot_spider_legs.png)
+
 ## Status
 
 **Demo-quality, research preview.** This is a hobbyist reproduction, not a research-grade
