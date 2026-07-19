@@ -58,74 +58,23 @@ is kept out of the fitting corpus entirely and used only as a held-out probe set
 
 ## Demos
 
-Run these yourself with `uv run python -m jlens_plamo.apply "<prompt>" --layers ...` (see
-`jlens_plamo/apply.py`). Output below is real, from the fitted `data/lens/lens.pt` described in
-`data/lens/README.md` — not fabricated or cherry-picked past what's shown.
+Real output from the fitted `data/lens/lens.pt` (see `data/lens/README.md`), reproducible via
+`uv run python -m jlens_plamo.apply "<prompt>" --layers ...` — not cherry-picked beyond this.
 
-**Two-step factual reasoning** (Japanese "the prefecture whose capital is Matsuyama"):
-the correct answer surfaces from layer 20 onward, well before the final layer.
+- **Two-step reasoning**: `県庁所在地が松山である県は` ("the prefecture whose capital is
+  Matsuyama") → `愛媛県` is the top readout from layer 20 onward, matching the model's own answer.
+- **Spider → legs, Japanese analogue** of the paper's headline example: `クモは節足動物で、脚の本数は`
+  → `8` is the top readout by layer 28, two layers before the model's own final answer.
+- **Cross-lingual concept binding**: `パリはフランスの首都です。日本の首都は` — layer 20 briefly
+  surfaces English `" Paris"` at the French-capital's own position, in an otherwise all-Japanese
+  prompt, and `東京` tops the final position.
 
-```
-uv run python -m jlens_plamo.apply "県庁所在地が松山である県は" --layer 24 --position -1 --top-k 5
-  '愛媛県'(42.75)  '愛媛'(37.00)  '松山市'(36.25)  '高知県'(34.25)  '四国'(33.25)
-model (final layer, true): '愛媛県'(15.88)  '愛媛'(14.25)  '四国'(12.50)  '松山市'(12.25)  '松山'(11.81)
-```
+Three hand-picked prompts, not a systematic evaluation — see [Limitations](#limitations).
 
-**"Spider → legs", Japanese analogue** of the Anthropic paper's headline example
-(`クモは節足動物で、脚の本数は` — "the spider is an arthropod, the number of legs is"): the count
-`8` is already the top readout by layer 28, two layers before the model's own final answer.
-
-```
- layer | ...本数           | は
-    24 | 本数           | 蜘
-    28 | 数は           | 8
-    30 | 数は           | 8
- model | 数            | 8
-```
-
-**Cross-lingual concept binding** (`パリはフランスの首都です。日本の首都は` — "Paris is the
-capital of France. Japan's capital is"): at layer 20, the readout at the *French* capital's own
-position briefly surfaces the English token `" Paris"` / `" in Paris"` even though the whole
-prompt is Japanese, and by the same layer `東京` (Tokyo) is already the top readout at the final
-position — the underlying concept looks language-agnostic before either surface-form token is
-chosen.
-
-```
- layer | 首都(after フランス)   | ... | 首都(after 日本の)  | は
-    20 |  Paris          |     | 東京            |  Tokyo
-    24 | 首都             |     | 東京            |  Tokyo
-    30 | 首都             |     | は             | 東京
- model | の              |     | 東京            | 東京
-```
-
-These are three prompts, not a systematic evaluation — see [Limitations](#limitations).
-
-### Free-chat ("Ask") in the web UI
-
-`web/index.html`'s "Ask" button is real free-form chat, not a fixed set of presets: type any
-question, the model actually generates a real answer (`model.generate()`), and the lens grid is
-then computed over the *whole* question+answer exchange — so you can see what the model was
-"disposed to say" during its own generated continuation, not just during the prompt. Answer
-columns are visually marked in the grid.
-
-Both "Generate" and "Ask" support sampling (`temperature`, `top_p`, `seed`, `num_samples` in the
-UI), entirely via `model.generate(do_sample=True, temperature=..., top_p=...)` — no hand-rolled
-sampling code. `temperature=0` reproduces the original deterministic greedy behavior (same prompt
-→ same output, every time — this is what earlier looked like "caching" but was actually just
-determinism); `temperature > 0` with `num_samples > 1` draws several samples in one batched
-`generate()` call (`num_return_sequences`) and shows a frequency table of the distinct outputs,
-each annotated with its first generated token's logprob (`output_scores=True`) — a hook for later
-correlating sampling-time model confidence against the lens's own readout ranking at that
-position. With `num_samples > 1` in Ask, the grid is only computed for the first sample (running
-the full per-layer readout for every sample isn't worth the cost, and there's no single grid that
-could represent several different continuations at once).
-
-(Contrast with [`jlens.wezzard.com`](https://jlens.wezzard.com), a public demo of the
-`jlens-qwen36` reference project: its page ships `window.JLENS_MODE = "presentation"` and a list
-of precomputed, gzipped example sessions — a deliberate read-only mode for public traffic, per
-that project's own README ("`active` is the full app; `presentation` is a strictly read-only
-viewer"). Nothing here needed that restriction: this UI only ever talks to one person's own local
-GPU, so `/api/ask` just runs generation live, every time.)
+The web UI's "Ask" button extends this to free-form chat: the model generates a real answer
+(`model.generate()`, with optional `temperature`/`top_p`/`seed`/`num_samples` sampling controls),
+and the same layer-readout grid is computed over the whole question+answer exchange, not just the
+prompt.
 
 ## Project layout
 
@@ -140,46 +89,28 @@ web/            FastAPI backend + self-contained HTML slice-grid viewer
 
 ## Environment notes / known compatibility issues
 
-Phase 3a's smoke test (`scripts/smoke_test.py`) surfaced three real incompatibilities between
-`pfnet/plamo-3-nict-8b-base`'s `trust_remote_code` model and the rest of this stack — none of
-them the SWA/GDN autograd concern originally anticipated. All three are worked around in
-`jlens_plamo/model_loading.py` (`load_plamo()`); use that instead of calling
-`AutoModelForCausalLM.from_pretrained()` directly, or you'll hit them yourself.
+Four real incompatibilities between `pfnet/plamo-3-nict-8b-base`'s `trust_remote_code` model and
+this stack — none the SWA/GDN autograd concern originally anticipated. All worked around already;
+use `jlens_plamo.model_loading.load_plamo()`, not `AutoModelForCausalLM.from_pretrained()`
+directly, or you'll hit them. Full technical detail in that module's docstring (issues 1–3) and
+`web/app.py` (issue 4).
 
-1. **`jlens.from_hf()`'s layout auto-detection doesn't work on PLaMo-3.** Its decoder wraps the
-   block list in an extra `Plamo3Decoder` module — `model.model.layers` is that wrapper, not the
-   `nn.ModuleList` of blocks (`model.model.layers.layers` is). `jlens_plamo/plamo_adapter.py`
-   implements `jlens.protocol.LensModel` directly instead, which is jlens's own documented
-   extension point for exactly this case. `jlens`'s fitting/application math is untouched.
-2. **`transformers` version mismatch on tied weights.** `transformers>=5.5` (required by `jlens`)
-   expects `_tied_weights_keys: dict[str, str]`; PLaMo's modeling file still sets the pre-5.5 list
-   form and crashes in `get_expanded_tied_weights_keys()`. Patched to the dict form at import time.
-3. **RoPE cache corruption on load (the one to actually watch out for).** Each layer's
-   `RotaryEmbedding` holds `inv_freq`/`cos_cached`/`sin_cached` as `persistent=False` buffers —
-   pure functions of static config, no learned data. On every load we tried, a random subset of
-   the 32 layers' worth of these buffers (varies per run, sometimes zero, sometimes over a third
-   of the model) come out as uninitialized garbage instead of the values `__init__` computed,
-   producing NaNs partway through the forward pass. Reproduced on CPU and CUDA, with and without
-   `low_cpu_mem_usage`. This looks like an upstream `transformers`/`accelerate` bug with
-   non-persistent computed buffers surviving the meta-device-skeleton + checkpoint-dispatch
-   loading path, not something specific to PLaMo or jlens. `load_plamo()` unconditionally rebuilds
-   these buffers after loading (cheap, deterministic, safe regardless of root cause). If you ever
-   load this model without going through `load_plamo()`, sanity-check
-   `torch.isnan(model.model.layers.layers[i].mixer.rotary_emb.inv_freq).any()` before trusting any
-   output.
+1. **`jlens.from_hf()` can't auto-detect PLaMo-3's decoder layout** (`model.model.layers` is a
+   wrapper, not the block list) — worked around with a custom `LensModel` adapter
+   (`jlens_plamo/plamo_adapter.py`); jlens's own fitting/application math is untouched.
+2. **`transformers>=5.5` tied-weights format mismatch** — PLaMo's modeling file still uses the
+   pre-5.5 `_tied_weights_keys` list form; patched to the dict form at import time.
+3. **RoPE buffer corruption on load, worth knowing about if you hit unexplained NaNs** — some
+   layers' `inv_freq`/`cos_cached`/`sin_cached` buffers can load as uninitialized garbage under
+   `from_pretrained`'s meta-device path. Looks like an upstream `transformers`/`accelerate` bug,
+   not PLaMo- or jlens-specific. `load_plamo()` unconditionally rebuilds them after loading.
+4. **`model.generate()` crashes** (`TypeError: 'Plamo3Cache' object is not subscriptable`) under
+   this `transformers` version's Cache API — only affects the web UI's generation endpoints, not
+   fitting/lens application. Worked around with `use_cache=False`.
 
-4. **`model.generate()`'s KV cache crashes on this `transformers` version.** PLaMo's custom
-   `Plamo3Cache.finalize()` does `self[layer_idx]` (subscript access), but `transformers`'
-   `generate()` loop hands it a plain `Cache` object that isn't subscriptable here, raising
-   `TypeError: 'Plamo3Cache' object is not subscriptable`. This only affects plain generation
-   (`web/app.py`'s `/generate` demo endpoint) — fitting and lens application never call
-   `.generate()`. Worked around with `use_cache=False` (recomputes attention over the whole
-   prefix each step instead of caching; fine for short demo continuations, not for long ones).
-
-Separately, `uv sync` pins `torch` to the `cu129` wheel index (see `pyproject.toml`): the default
-PyPI torch build at the time of writing links against CUDA 13, newer than what this project's dev
-GPU (RTX 5090, driver 576.88, CUDA 12.9) supports. If you're on different hardware/drivers, adjust
-or remove that pin.
+Separately, `uv sync` pins `torch` to the `cu129` wheel index (see `pyproject.toml`) for this
+project's dev GPU (RTX 5090, driver 576.88, CUDA 12.9) — adjust or remove that pin for other
+hardware/drivers.
 
 ## Limitations
 
