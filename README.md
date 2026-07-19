@@ -29,7 +29,10 @@ uv run python scripts/run_fit.py
 # Phase 4 — apply the fitted lens: layer x position top-k readout
 uv run python -m jlens_plamo.apply "県庁所在地が松山である県は" --layers 16,20,24,28,30
 
-# Phase 5 — haiku probing + UI
+# Phase 5 — self-contained slice-grid UI (haiku probe set not required to explore arbitrary prompts)
+uv sync --extra web
+uv run uvicorn web.app:app --port 8420
+# then open http://localhost:8420/
 ```
 
 `uv sync` pulls a CUDA-12.9-linked (`cu129`) torch build (see
@@ -137,6 +140,14 @@ them the SWA/GDN autograd concern originally anticipated. All three are worked a
    load this model without going through `load_plamo()`, sanity-check
    `torch.isnan(model.model.layers.layers[i].mixer.rotary_emb.inv_freq).any()` before trusting any
    output.
+
+4. **`model.generate()`'s KV cache crashes on this `transformers` version.** PLaMo's custom
+   `Plamo3Cache.finalize()` does `self[layer_idx]` (subscript access), but `transformers`'
+   `generate()` loop hands it a plain `Cache` object that isn't subscriptable here, raising
+   `TypeError: 'Plamo3Cache' object is not subscriptable`. This only affects plain generation
+   (`web/app.py`'s `/generate` demo endpoint) — fitting and lens application never call
+   `.generate()`. Worked around with `use_cache=False` (recomputes attention over the whole
+   prefix each step instead of caching; fine for short demo continuations, not for long ones).
 
 Separately, `uv sync` pins `torch` to the `cu129` wheel index (see `pyproject.toml`): the default
 PyPI torch build at the time of writing links against CUDA 13, newer than what this project's dev

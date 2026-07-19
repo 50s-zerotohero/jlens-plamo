@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>jlens-plamo viewer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #666666;
+    --border: #d8d8d8;
+    --panel-bg: #f5f5f5;
+    --accent: #2b5fd9;
+    --accent-fg: #ffffff;
+    --cell-hover: #e8eefc;
+    --cell-selected: #2b5fd9;
+    --cell-selected-fg: #ffffff;
+    --mono: "SF Mono", "Menlo", "Consolas", "Yu Gothic Mono", "Hiragino Kaku Gothic ProN", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --fg: #e6e6e6;
+      --muted: #9a9a9a;
+      --border: #3a3d42;
+      --panel-bg: #202329;
+      --accent: #6d93ff;
+      --accent-fg: #0d1117;
+      --cell-hover: #262b36;
+      --cell-selected: #6d93ff;
+      --cell-selected-fg: #0d1117;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  header {
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 1.05rem; margin: 0; }
+  #lens-info { color: var(--muted); font-size: 0.85rem; }
+
+  main { padding: 1.25rem; max-width: 100%; }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+  }
+  textarea#prompt {
+    width: 100%;
+    min-height: 3.2rem;
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    padding: 0.5rem;
+    background: var(--panel-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    resize: vertical;
+  }
+  .row { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; font-size: 0.85rem; }
+  .row label { display: flex; align-items: center; gap: 0.35rem; color: var(--muted); }
+  input[type="number"], input[type="text"] {
+    font-family: var(--mono);
+    background: var(--panel-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.25rem 0.4rem;
+    width: 5rem;
+  }
+  input#layers { width: 12rem; }
+  button {
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #status { color: var(--muted); font-size: 0.85rem; min-height: 1.2em; }
+  #status.error { color: #d9534f; }
+
+  .grid-wrap {
+    overflow: auto;
+    max-height: 65vh;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 1rem;
+  }
+  table.grid { border-collapse: collapse; font-family: var(--mono); font-size: 0.85rem; }
+  table.grid th, table.grid td {
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.5rem;
+    white-space: nowrap;
+    text-align: left;
+  }
+  table.grid thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-bg);
+    z-index: 2;
+  }
+  table.grid tbody th {
+    position: sticky;
+    left: 0;
+    background: var(--panel-bg);
+    z-index: 1;
+    color: var(--muted);
+    text-align: right;
+  }
+  table.grid thead th:first-child { left: 0; z-index: 3; }
+  table.grid td.readout { cursor: pointer; }
+  table.grid td.readout:hover { background: var(--cell-hover); }
+  table.grid td.readout.selected { background: var(--cell-selected); color: var(--cell-selected-fg); }
+  table.grid tr.model-row th, table.grid tr.model-row td { border-top: 2px solid var(--accent); font-weight: 600; }
+
+  #detail, #generate-out {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    margin-bottom: 1rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #detail h3, #generate-out h3 { margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+  .rank { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>jlens-plamo viewer</h1>
+  <span id="lens-info">loading lens info…</span>
+</header>
+<main>
+  <div class="controls">
+    <textarea id="prompt" placeholder="プロンプトを入力 (例: 県庁所在地が松山である県は)">県庁所在地が松山である県は</textarea>
+    <div class="row">
+      <label>top-k <input type="number" id="top-k" value="10" min="1" max="50" /></label>
+      <label>layers <input type="text" id="layers" placeholder="空欄=全fit層 (例: 0,4,8,...)" /></label>
+      <label><input type="checkbox" id="use-jacobian" checked /> J_l transport (外すと素のlogit lens)</label>
+      <button id="run-btn">Run</button>
+      <label>max_new_tokens <input type="number" id="max-new-tokens" value="30" min="1" max="200" /></label>
+      <button id="generate-btn" class="secondary">Generate (レンズなし)</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div id="generate-out" style="display:none"></div>
+
+  <div class="grid-wrap"><div id="grid"></div></div>
+
+  <div id="detail">
+    <h3>詳細 (セルをクリック)</h3>
+    <div id="detail-body">layer × position のセルをクリックすると、top-k の読み出し結果がここに表示されます。</div>
+  </div>
+</main>
+
+<script>
+let lastSlice = null;
+let selectedCell = null;
+
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status");
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg || "";
+  statusEl.className = isError ? "error" : "";
+}
+
+async function loadLensInfo() {
+  try {
+    const res = await fetch("/api/lens");
+    if (!res.ok) throw new Error(await res.text());
+    const info = await res.json();
+    $("lens-info").textContent =
+      `${info.model_id} — d_model=${info.d_model}, n_prompts=${info.n_prompts}, ` +
+      `source_layers=[${info.source_layers[0]}..${info.source_layers[info.source_layers.length - 1]}]`;
+  } catch (e) {
+    $("lens-info").textContent = "lens情報の取得に失敗 (初回リクエストでモデルをロードします; " + e + ")";
+  }
+}
+
+function fmtLogit(x) { return x.toFixed(2); }
+
+function renderDetail(layerLabel, position, token, readouts) {
+  const body = $("detail-body");
+  const lines = [`layer ${layerLabel}, position ${position} (token ${JSON.stringify(token)}):`];
+  readouts.forEach((r, i) => {
+    lines.push(`  <span class="rank">${i + 1}.</span> ${JSON.stringify(r.token)}  (${fmtLogit(r.logit)})`);
+  });
+  body.innerHTML = lines.join("\n");
+}
+
+function renderGrid(data) {
+  lastSlice = data;
+  const grid = $("grid");
+  grid.innerHTML = "";
+  const table = document.createElement("table");
+  table.className = "grid";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  headRow.appendChild(document.createElement("th"));
+  data.tokens.forEach((tok, pos) => {
+    const th = document.createElement("th");
+    th.textContent = tok;
+    th.title = `position ${pos}`;
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  data.layers.forEach((layer) => {
+    const tr = document.createElement("tr");
+    const rowHead = document.createElement("th");
+    rowHead.textContent = "L" + layer;
+    tr.appendChild(rowHead);
+    const rowData = data.grid[String(layer)];
+    rowData.forEach((readouts, posIdx) => {
+      const td = document.createElement("td");
+      td.className = "readout";
+      td.textContent = readouts.length ? readouts[0].token : "";
+      td.addEventListener("click", () => {
+        if (selectedCell) selectedCell.classList.remove("selected");
+        td.classList.add("selected");
+        selectedCell = td;
+        renderDetail("L" + layer, data.positions[posIdx], data.tokens[posIdx] ?? "", readouts);
+      });
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+
+  // Final row: the model's own (unlensed) final-layer prediction, for comparison.
+  const modelRow = document.createElement("tr");
+  modelRow.className = "model-row";
+  const modelHead = document.createElement("th");
+  modelHead.textContent = "model";
+  modelRow.appendChild(modelHead);
+  data.model_readout.forEach((readouts, posIdx) => {
+    const td = document.createElement("td");
+    td.className = "readout";
+    td.textContent = readouts.length ? readouts[0].token : "";
+    td.addEventListener("click", () => {
+      if (selectedCell) selectedCell.classList.remove("selected");
+      td.classList.add("selected");
+      selectedCell = td;
+      renderDetail("model (final)", data.positions[posIdx], data.tokens[posIdx] ?? "", readouts);
+    });
+    modelRow.appendChild(td);
+  });
+  tbody.appendChild(modelRow);
+
+  table.appendChild(tbody);
+  grid.appendChild(table);
+}
+
+async function runSlice() {
+  const prompt = $("prompt").value;
+  if (!prompt.trim()) { setStatus("プロンプトを入力してください", true); return; }
+  const layersRaw = $("layers").value.trim();
+  const body = {
+    prompt,
+    top_k: parseInt($("top-k").value, 10) || 10,
+    use_jacobian: $("use-jacobian").checked,
+    layers: layersRaw ? layersRaw.split(",").map((s) => parseInt(s.trim(), 10)) : null,
+  };
+  $("run-btn").disabled = true;
+  setStatus("実行中… (初回はモデルロードで数十秒かかります)");
+  try {
+    const res = await fetch("/api/slice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderGrid(data);
+    setStatus(`完了: ${data.tokens.length} トークン × ${data.layers.length} 層`);
+  } catch (e) {
+    setStatus("エラー: " + e, true);
+  } finally {
+    $("run-btn").disabled = false;
+  }
+}
+
+async function runGenerate() {
+  const prompt = $("prompt").value;
+  if (!prompt.trim()) { setStatus("プロンプトを入力してください", true); return; }
+  const out = $("generate-out");
+  $("generate-btn").disabled = true;
+  setStatus("生成中…");
+  try {
+    const res = await fetch("/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, max_new_tokens: parseInt($("max-new-tokens").value, 10) || 30 }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    out.style.display = "block";
+    out.innerHTML = "<h3>モデルの実際の生成結果(レンズ非使用)</h3>" + data.full_text.replace(/</g, "&lt;");
+    setStatus("生成完了");
+  } catch (e) {
+    setStatus("エラー: " + e, true);
+  } finally {
+    $("generate-btn").disabled = false;
+  }
+}
+
+$("run-btn").addEventListener("click", runSlice);
+$("generate-btn").addEventListener("click", runGenerate);
+loadLensInfo();
+</script>
+</body>
+</html>
